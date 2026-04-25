@@ -103,18 +103,29 @@ def predict_case_llm(
                     _cache[key] = relevant
         except Exception as e:
             log.warning("LLM call failed, falling back to rule-based: %s", e)
-            # fill cache with rule-based fallback
-            current = parse_study(current_desc, current_date)
-            for p in uncached:
-                prior = parse_study(p["study_description"], p.get("study_date"))
-                result = predict_relevance(current, prior)
-                key = _pair_key(current_desc, p["study_description"])
-                _cache[key] = result
 
-    return {
-        p["study_id"]: _cache[_pair_key(current_desc, p["study_description"])]
-        for p in priors
-    }
+        # Any uncached priors the model didn't return get rule-based fallback.
+        # Never default to True for missing model output.
+        current_feat = parse_study(current_desc, current_date)
+        for p in uncached:
+            key = _pair_key(current_desc, p["study_description"])
+            if key not in _cache:
+                prior_feat = parse_study(p["study_description"], p.get("study_date"))
+                _cache[key] = predict_relevance(current_feat, prior_feat)
+                log.debug("rule-based fallback for study_id=%s", p["study_id"])
+
+    def _get(p: dict) -> bool:
+        key = _pair_key(current_desc, p["study_description"])
+        if key in _cache:
+            return _cache[key]
+        # Should not reach here, but rule-based is safer than raising.
+        log.warning("cache miss for study_id=%s — applying rule-based", p["study_id"])
+        feat = parse_study(p["study_description"], p.get("study_date"))
+        result = predict_relevance(parse_study(current_desc, current_date), feat)
+        _cache[key] = result
+        return result
+
+    return {p["study_id"]: _get(p) for p in priors}
 
 
 def get_cache() -> dict:
